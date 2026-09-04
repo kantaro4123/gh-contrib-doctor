@@ -1,0 +1,53 @@
+name: Integration
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  live-github-smoke:
+    name: Live GitHub API smoke test
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_CONFIG_DIR: ${{ runner.temp }}/gh-config
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install extension from checkout
+        run: gh extension install .
+
+      - name: Configure identity from repository history
+        run: |
+          git config user.name "$(git log -1 --format=%an)"
+          git config user.email "$(git log -1 --format=%ae)"
+
+      - name: Run against the real repository and GitHub API
+        shell: bash
+        run: |
+          set +e
+          output=$(gh contrib-doctor --all-time 2>&1)
+          status=$?
+          set -e
+
+          printf '%s\n' "$output"
+
+          if [ "$status" -eq 2 ]; then
+            echo "The doctor could not complete its live GitHub API checks." >&2
+            exit 1
+          fi
+
+          grep -q "GitHub CLI authenticated as" <<< "$output"
+          grep -q "Default branch:" <<< "$output"
+          grep -q "Diagnosis" <<< "$output"
