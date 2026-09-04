@@ -1,46 +1,16 @@
 # gh-contrib-doctor
 
-Diagnose why your Git commits may be missing from your GitHub contribution graph.
+[![CI](https://github.com/kantaro4123/gh-contrib-doctor/actions/workflows/ci.yml/badge.svg)](https://github.com/kantaro4123/gh-contrib-doctor/actions/workflows/ci.yml)
+[![Integration](https://github.com/kantaro4123/gh-contrib-doctor/actions/workflows/integration.yml/badge.svg)](https://github.com/kantaro4123/gh-contrib-doctor/actions/workflows/integration.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-`gh-contrib-doctor` is a lightweight [GitHub CLI](https://cli.github.com/) extension. It checks the rules GitHub documents for commit contributions and points out the most common blockers: author-email attribution, non-default branches, forks, and private-repository visibility.
+**Find out why your Git commits are missing from your GitHub contribution graph.**
 
-> Status: `v0.1.0` — tested on Linux and macOS.
-
-## What it checks
-
-- GitHub CLI authentication and the current repository
-- Whether the repository is a standalone repository or a fork
-- The repository's default branch and local `gh-pages` branch
-- Whether your configured Git author email is one GitHub allows the authenticated user to commit with
-- Likely commits from your local Git identity that exist only outside contribution-eligible branches
-- Historical author emails matching your current Git author name that may no longer be attributed to your account
-- Private-repository visibility caveats
-- The up-to-24-hour delay GitHub documents for newly qualifying commits
-
-GitHub's documented criteria are the source of truth: a commit must use an email associated with your account, be in a standalone repository, and be on the default branch or `gh-pages` (for a project site). GitHub also applies an account/repository relationship requirement. See [Profile contributions reference](https://docs.github.com/en/account-and-profile/reference/profile-contributions-reference) and [Troubleshooting missing contributions](https://docs.github.com/en/account-and-profile/how-tos/contribution-settings/troubleshooting-missing-contributions).
-
-For email checks, the extension uses GitHub's `viewerPossibleCommitEmails` repository field, which GitHub defines as the emails the current viewer can commit with. If that field is unavailable, the doctor falls back to the author attribution on a matching commit.
-
-## Install
+`gh-contrib-doctor` is a lightweight GitHub CLI extension that checks the common reasons commits do not appear as GitHub contributions: author-email attribution, non-default branches, forks, and repository relationship issues.
 
 ```bash
 gh extension install kantaro4123/gh-contrib-doctor
-```
-
-Then run it from inside a Git repository:
-
-```bash
 gh contrib-doctor
-```
-
-By default, the doctor analyzes the last year, matching the time window shown on the GitHub profile contribution graph.
-
-```bash
-# Use any date expression accepted by git log
-gh contrib-doctor --since "6 months ago"
-
-# Analyze the complete local history
-gh contrib-doctor --all-time
 ```
 
 ## Example
@@ -65,38 +35,81 @@ Diagnosis
   ✗ 1 definite blocker(s) found
 ```
 
+## What it checks
+
+- GitHub CLI authentication and the current repository
+- Whether the repository is a standalone repository or a fork
+- The repository's default branch and local `gh-pages` branch
+- Whether your configured Git author email is allowed for the authenticated GitHub user
+- Commits from your likely Git identity that only exist outside contribution-eligible branches
+- Historical author emails that may no longer be attributed to your account
+- Repository relationship and private-contribution caveats
+- GitHub's documented delay before newly qualifying contributions appear
+
+GitHub's documented rules remain the source of truth. See [Profile contributions reference](https://docs.github.com/en/account-and-profile/reference/profile-contributions-reference) and [Troubleshooting missing contributions](https://docs.github.com/en/account-and-profile/how-tos/contribution-settings/troubleshooting-missing-contributions).
+
+For email checks, the extension uses GitHub's `viewerPossibleCommitEmails` repository field when available and falls back to commit attribution metadata when necessary.
+
+## Usage
+
+Run it from inside a Git repository:
+
+```bash
+gh contrib-doctor
+```
+
+The default analysis window is one year, matching the usual GitHub profile contribution view.
+
+```bash
+# Any date expression accepted by git log
+gh contrib-doctor --since "6 months ago"
+
+# Analyze complete local history
+gh contrib-doctor --all-time
+
+# Other commands
+gh contrib-doctor --version
+gh contrib-doctor --help
+```
+
 ## Exit codes
 
 | Code | Meaning |
 | --- | --- |
 | `0` | No definite blocker was found |
 | `1` | At least one definite contribution blocker was found |
-| `2` | The doctor could not run (for example, not in a Git repository or GitHub CLI is not authenticated) |
+| `2` | The doctor could not run |
 
 Warnings and unknown checks do not by themselves produce exit code `1`.
 
+## Requirements
+
+- Git
+- [GitHub CLI](https://cli.github.com/) authenticated with a user account (`gh auth login`)
+- Bash
+
+The extension has no package-manager or runtime dependencies beyond those tools.
+
 ## Privacy
 
-The extension does not send repository contents anywhere. It reads local Git metadata and uses your existing `gh` authentication to query GitHub repository and commit metadata. No third-party service is used.
+Repository contents are not uploaded to any third-party service. The extension reads local Git metadata and uses your existing GitHub CLI authentication to query GitHub repository and commit metadata.
 
 ## Limitations
 
-`gh-contrib-doctor` diagnoses the common commit-contribution rules that can be checked from a local clone and the GitHub API. It does not attempt to reproduce GitHub's contribution graph internally.
+`gh-contrib-doctor` diagnoses contribution rules that can be checked from a local clone and the GitHub API; it does not reproduce GitHub's contribution graph internally.
 
-Historical commits made with both a different author name and a different email from your current local Git identity may not be recognized as yours automatically. Squashes, rebases, rewritten history, shallow clones, stale remote-tracking branches, and commits that have not been pushed can also limit what can be diagnosed.
+Historical commits made with both a different author name and a different email from your current local Git identity may not be recognized automatically. Squashes, rebases, rewritten history, shallow clones, stale remote-tracking branches, and unpushed commits can also limit diagnosis.
 
 A local `gh-pages` branch is treated as potentially contribution-eligible, but GitHub only applies the special `gh-pages` rule when it is used for a project site.
 
 ## Development
-
-The extension is intentionally dependency-free beyond Bash, Git, and GitHub CLI.
 
 ```bash
 bash -n gh-contrib-doctor
 bash tests/run.sh
 ```
 
-CI runs the test suite and a real `gh extension install .` smoke test on both Linux and macOS.
+CI runs the test suite and a real `gh extension install .` smoke test on Linux and macOS. A separate integration workflow exercises the live GitHub repository APIs available to GitHub Actions. The full diagnostic itself requires a user-authenticated `gh` session because the repository-scoped Actions token cannot identify a GitHub user.
 
 ## License
 
