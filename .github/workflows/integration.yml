@@ -17,7 +17,6 @@ jobs:
     timeout-minutes: 5
     env:
       GH_TOKEN: ${{ github.token }}
-      GH_CONFIG_DIR: ${{ runner.temp }}/gh-config
 
     steps:
       - name: Check out repository
@@ -26,6 +25,8 @@ jobs:
           fetch-depth: 0
 
       - name: Install extension from checkout
+        env:
+          GH_CONFIG_DIR: ${{ runner.temp }}/gh-config
         run: gh extension install .
 
       - name: Configure identity from repository history
