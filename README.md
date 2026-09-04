@@ -11,13 +11,15 @@ Diagnose why your Git commits may be missing from your GitHub contribution graph
 - GitHub CLI authentication and the current repository
 - Whether the repository is a standalone repository or a fork
 - The repository's default branch and local `gh-pages` branch
-- Whether your configured Git author email is linked to your GitHub account when that information is available
+- Whether your configured Git author email is one GitHub allows the authenticated user to commit with
 - Likely commits from your local Git identity that exist only outside contribution-eligible branches
-- Historical author emails matching your current Git author name that may no longer be linked to your account
+- Historical author emails matching your current Git author name that may no longer be attributed to your account
 - Private-repository visibility caveats
 - The up-to-24-hour delay GitHub documents for newly qualifying commits
 
 GitHub's documented criteria are the source of truth: a commit must use an email associated with your account, be in a standalone repository, and be on the default branch or `gh-pages` (for a project site). GitHub also applies an account/repository relationship requirement. See [Profile contributions reference](https://docs.github.com/en/account-and-profile/reference/profile-contributions-reference) and [Troubleshooting missing contributions](https://docs.github.com/en/account-and-profile/how-tos/contribution-settings/troubleshooting-missing-contributions).
+
+For email checks, the extension uses GitHub's `viewerPossibleCommitEmails` repository field, which GitHub defines as the emails the current viewer can commit with. If that field is unavailable, the doctor falls back to the author attribution on a matching commit.
 
 ## Install
 
@@ -52,7 +54,7 @@ Repository
   ✓ Default branch: main
 
 Git identity
-  ✓ octocat@example.com is linked to @octocat
+  ✓ octocat@example.com is a GitHub-allowed commit email for @octocat
 
 Commits (since 1 year ago)
   · 49 likely commit(s) match your current Git identity
@@ -75,7 +77,7 @@ Warnings and unknown checks do not by themselves produce exit code `1`.
 
 ## Privacy
 
-The extension does not send repository contents anywhere. It reads local Git metadata and uses your existing `gh` authentication to query GitHub. When possible it asks GitHub for the email addresses associated with the authenticated account. If the token does not have permission to read them, it falls back to GitHub's commit-attribution metadata for commits it can find on the remote repository.
+The extension does not send repository contents anywhere. It reads local Git metadata and uses your existing `gh` authentication to query GitHub repository and commit metadata. No third-party service is used.
 
 ## Limitations
 
@@ -94,7 +96,7 @@ bash -n gh-contrib-doctor
 bash tests/run.sh
 ```
 
-CI runs the test suite on both Linux and macOS.
+CI runs the test suite and a real `gh extension install .` smoke test on both Linux and macOS.
 
 ## License
 

@@ -8,7 +8,7 @@ All notable changes to this project will be documented in this file.
 
 - Initial `gh contrib-doctor` command.
 - Checks for forks, default-branch eligibility, Git author email attribution, and private-repository visibility.
-- Fallback commit-attribution check when the GitHub token cannot list account emails.
+- Email verification via GitHub's `viewerPossibleCommitEmails`, with commit-attribution fallback.
 - `--since`, `--all-time`, `--help`, and `--version` options.
 - Dependency-free test suite for clean, branch-only, fork, and email-attribution scenarios.
-- GitHub Actions CI on Linux and macOS.
+- GitHub Actions CI on Linux and macOS, including a real extension-install smoke test.

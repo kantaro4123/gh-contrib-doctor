@@ -30,3 +30,10 @@ jobs:
 
       - name: Run tests
         run: bash tests/run.sh
+
+      - name: Smoke-test GitHub CLI extension install
+        env:
+          GH_CONFIG_DIR: ${{ runner.temp }}/gh-config
+        run: |
+          gh extension install .
+          gh contrib-doctor --version

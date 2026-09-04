@@ -25,15 +25,18 @@ if [ "${1:-}" = "api" ] && [ "${2:-}" = "user" ]; then
   exit 0
 fi
 
-if [ "${1:-}" = "api" ] && [ "${2:-}" = "user/emails" ]; then
-  if [ "${MOCK_EMAIL_SCOPE:-1}" = "0" ]; then
-    exit 1
-  fi
-  printf '%s\n' "${MOCK_LINKED_EMAILS:-test@example.com}"
-  exit 0
-fi
-
 if [ "${1:-}" = "repo" ] && [ "${2:-}" = "view" ]; then
+  case " $* " in
+    *viewerDefaultCommitEmail*)
+      if [ "${MOCK_POSSIBLE_EMAILS_AVAILABLE:-1}" = "0" ]; then
+        exit 1
+      fi
+      printf '%s\n' "${MOCK_DEFAULT_EMAIL:-test@example.com}"
+      printf '%s\n' "${MOCK_LINKED_EMAILS:-test@example.com}"
+      exit 0
+      ;;
+  esac
+
   printf 'test/repo\tmain\t%s\t%s\t%s\n' \
     "${MOCK_IS_FORK:-false}" \
     "${MOCK_VISIBILITY:-PUBLIC}" \
@@ -128,6 +131,7 @@ status=$?
 assert_status "clean repository exits 0" 0 "$status"
 assert_contains "clean repository reports no blockers" "$output" "No definite contribution blockers found"
 assert_contains "clean repository recognizes default branch" "$output" "Default branch: main"
+assert_contains "clean repository recognizes allowed email" "$output" "GitHub-allowed commit email"
 
 # Commit only on a feature branch
 repo="$TMP_ROOT/branch-only"
@@ -155,15 +159,16 @@ assert_contains "fork is diagnosed" "$output" "is a fork"
 # Unlinked configured email
 repo="$TMP_ROOT/unlinked"
 new_repo "$repo"
-output=$(MOCK_LINKED_EMAILS="other@example.com" run_doctor "$repo")
+output=$(MOCK_LINKED_EMAILS="other@example.com" MOCK_DEFAULT_EMAIL="other@example.com" run_doctor "$repo")
 status=$?
 assert_status "unlinked email exits 1" 1 "$status"
-assert_contains "unlinked email is diagnosed" "$output" "test@example.com is not linked to @testuser"
+assert_contains "unlinked email is diagnosed" "$output" "test@example.com is not a GitHub-allowed commit email for @testuser"
+assert_contains "unlinked email suggests GitHub default" "$output" "GitHub's default commit email here is other@example.com"
 
-# Email-list permission fallback via commit attribution
+# Possible-email query fallback via commit attribution
 repo="$TMP_ROOT/fallback"
 new_repo "$repo"
-output=$(MOCK_EMAIL_SCOPE=0 MOCK_COMMIT_LOGIN=testuser run_doctor "$repo")
+output=$(MOCK_POSSIBLE_EMAILS_AVAILABLE=0 MOCK_COMMIT_LOGIN=testuser run_doctor "$repo")
 status=$?
 assert_status "commit-attribution fallback exits 0" 0 "$status"
 assert_contains "fallback recognizes GitHub attribution" "$output" "GitHub attributes commits using test@example.com to @testuser"

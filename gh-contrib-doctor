@@ -227,6 +227,7 @@ git rev-parse --is-inside-work-tree >/dev/null 2>&1 || die "run this command ins
 TMP_DIR=$(mktemp -d 2>/dev/null || mktemp -d -t gh-contrib-doctor) || die "could not create temporary directory"
 LINKED_EMAILS_RAW="$TMP_DIR/linked-emails-raw"
 LINKED_EMAILS="$TMP_DIR/linked-emails"
+EMAIL_INFO="$TMP_DIR/email-info"
 CANDIDATE_EMAILS_RAW="$TMP_DIR/candidate-emails-raw"
 CANDIDATE_EMAILS="$TMP_DIR/candidate-emails"
 ALL_LOG="$TMP_DIR/all-log.tsv"
@@ -247,7 +248,14 @@ LOCAL_NAME=$(git config --get user.name 2>/dev/null || true)
 LOCAL_EMAIL=$(git config --get user.email 2>/dev/null || true)
 
 EMAIL_LIST_AVAILABLE=1
-if ! gh api user/emails --paginate --jq '.[].email' > "$LINKED_EMAILS_RAW" 2>/dev/null; then
+GITHUB_DEFAULT_EMAIL=""
+if gh repo view --json viewerDefaultCommitEmail,viewerPossibleCommitEmails --jq '(.viewerDefaultCommitEmail // ""), (.viewerPossibleCommitEmails[]?)' > "$EMAIL_INFO" 2>/dev/null; then
+  GITHUB_DEFAULT_EMAIL=$(sed -n '1p' "$EMAIL_INFO")
+  sed '1d' "$EMAIL_INFO" > "$LINKED_EMAILS_RAW"
+  if [ -n "$GITHUB_DEFAULT_EMAIL" ]; then
+    printf '%s\n' "$GITHUB_DEFAULT_EMAIL" >> "$LINKED_EMAILS_RAW"
+  fi
+else
   EMAIL_LIST_AVAILABLE=0
   : > "$LINKED_EMAILS_RAW"
 fi
@@ -360,25 +368,25 @@ else
   case "$config_status" in
     linked)
       if [ "$EMAIL_LIST_AVAILABLE" -eq 1 ]; then
-        ok "$LOCAL_EMAIL is linked to @$LOGIN"
+        ok "$LOCAL_EMAIL is a GitHub-allowed commit email for @$LOGIN"
       else
         ok "GitHub attributes commits using $LOCAL_EMAIL to @$LOGIN"
       fi
       ;;
     unlinked)
-      blocker "$LOCAL_EMAIL is not linked to @$LOGIN"
+      blocker "$LOCAL_EMAIL is not a GitHub-allowed commit email for @$LOGIN"
+      if [ -n "$GITHUB_DEFAULT_EMAIL" ]; then
+        info "GitHub's default commit email here is $GITHUB_DEFAULT_EMAIL"
+      fi
       ;;
     unknown)
-      warning "Could not verify whether $LOCAL_EMAIL is linked to @$LOGIN"
-      if [ "$EMAIL_LIST_AVAILABLE" -eq 0 ]; then
-        info "For an exact email check, grant gh the user:email scope: gh auth refresh -s user:email"
-      fi
+      warning "Could not verify whether $LOCAL_EMAIL is attributed to @$LOGIN"
       ;;
   esac
 fi
 
 if [ "$EMAIL_LIST_AVAILABLE" -eq 0 ]; then
-  info "GitHub did not expose the account email list; commit metadata is used as a fallback where possible"
+  info "GitHub CLI did not expose viewerPossibleCommitEmails; commit metadata is used as a fallback where possible"
 fi
 
 if [ "$HAS_COMMITS" -eq 1 ]; then
