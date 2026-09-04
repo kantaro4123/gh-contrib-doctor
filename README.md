@@ -4,7 +4,7 @@ Diagnose why your Git commits may be missing from your GitHub contribution graph
 
 `gh-contrib-doctor` is a lightweight [GitHub CLI](https://cli.github.com/) extension. It checks the rules GitHub documents for commit contributions and points out the most common blockers: author-email attribution, non-default branches, forks, and private-repository visibility.
 
-> Status: early development (`v0.1.0`). The repository is intentionally private until the first release is verified.
+> Status: `v0.1.0` — tested on Linux and macOS.
 
 ## What it checks
 
