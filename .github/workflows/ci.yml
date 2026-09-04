@@ -1,0 +1,39 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 5
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - macos-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Check Bash syntax
+        run: |
+          bash -n gh-contrib-doctor
+          bash -n tests/run.sh
+
+      - name: Run tests
+        run: bash tests/run.sh
+
+      - name: Smoke-test GitHub CLI extension install
+        env:
+          GH_CONFIG_DIR: ${{ runner.temp }}/gh-config
+        run: |
+          gh extension install .
+          gh contrib-doctor --version

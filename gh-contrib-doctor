@@ -1,0 +1,462 @@
+#!/usr/bin/env bash
+set -u
+set -o pipefail
+
+VERSION="0.1.0"
+SINCE="1 year ago"
+ALL_TIME=0
+BLOCKERS=0
+WARNINGS=0
+TMP_DIR=""
+
+usage() {
+  cat <<'EOF'
+gh-contrib-doctor - diagnose missing GitHub commit contributions
+
+Usage:
+  gh contrib-doctor [options]
+
+Options:
+  --since <date>  Analyze commits since a date accepted by `git log`
+                  (default: "1 year ago")
+  --all-time      Analyze the complete local Git history
+  -h, --help      Show this help
+  --version       Show the version
+
+Exit codes:
+  0  No definite blocker found
+  1  One or more definite blockers found
+  2  The doctor could not run
+EOF
+}
+
+die() {
+  printf 'error: %s\n' "$*" >&2
+  exit 2
+}
+
+cleanup() {
+  if [ -n "${TMP_DIR:-}" ] && [ -d "$TMP_DIR" ]; then
+    rm -rf "$TMP_DIR"
+  fi
+}
+
+trap cleanup EXIT INT TERM
+
+if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
+  GREEN='\033[32m'
+  YELLOW='\033[33m'
+  RED='\033[31m'
+  BLUE='\033[34m'
+  BOLD='\033[1m'
+  RESET='\033[0m'
+else
+  GREEN=''
+  YELLOW=''
+  RED=''
+  BLUE=''
+  BOLD=''
+  RESET=''
+fi
+
+section() {
+  printf '\n%b%s%b\n' "$BOLD" "$1" "$RESET"
+}
+
+ok() {
+  printf '  %b✓%b %s\n' "$GREEN" "$RESET" "$*"
+}
+
+info() {
+  printf '  %b·%b %s\n' "$BLUE" "$RESET" "$*"
+}
+
+warning() {
+  WARNINGS=$((WARNINGS + 1))
+  printf '  %b!%b %s\n' "$YELLOW" "$RESET" "$*"
+}
+
+blocker() {
+  BLOCKERS=$((BLOCKERS + 1))
+  printf '  %b✗%b %s\n' "$RED" "$RESET" "$*"
+}
+
+line_count() {
+  awk 'END { print NR + 0 }' "$1"
+}
+
+normalize_email_file() {
+  input_file="$1"
+  output_file="$2"
+  awk 'NF { print tolower($0) }' "$input_file" | sort -u > "$output_file"
+}
+
+email_in_file() {
+  needle=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')
+  grep -Fxiq -- "$needle" "$2"
+}
+
+emit_log() {
+  ref="$1"
+  format='%H%x09%an%x09%ae'
+
+  if [ "$ref" = "__all__" ]; then
+    if [ "$ALL_TIME" -eq 1 ]; then
+      git log --all --format="$format"
+    else
+      git log --all --since="$SINCE" --format="$format"
+    fi
+  else
+    if [ "$ALL_TIME" -eq 1 ]; then
+      git log "$ref" --format="$format"
+    else
+      git log "$ref" --since="$SINCE" --format="$format"
+    fi
+  fi
+}
+
+resolve_branch_ref() {
+  branch="$1"
+
+  if git rev-parse --verify --quiet "origin/$branch^{commit}" >/dev/null 2>&1; then
+    printf 'origin/%s\n' "$branch"
+    return 0
+  fi
+
+  if git rev-parse --verify --quiet "$branch^{commit}" >/dev/null 2>&1; then
+    printf '%s\n' "$branch"
+    return 0
+  fi
+
+  return 1
+}
+
+filter_candidate_hashes() {
+  emails_file="$1"
+  log_file="$2"
+  awk -F '\t' '
+    NR == FNR { emails[tolower($1)] = 1; next }
+    emails[tolower($3)] { print $1 }
+  ' "$emails_file" "$log_file"
+}
+
+commit_count_for_email() {
+  email="$1"
+  log_file="$2"
+  awk -F '\t' -v email="$email" '
+    BEGIN { target = tolower(email) }
+    tolower($3) == target { count++ }
+    END { print count + 0 }
+  ' "$log_file"
+}
+
+sample_sha_for_email() {
+  email="$1"
+  log_file="$2"
+  awk -F '\t' -v email="$email" '
+    BEGIN { target = tolower(email) }
+    tolower($3) == target { print $1; exit }
+  ' "$log_file"
+}
+
+classify_email() {
+  email="$1"
+
+  if email_in_file "$email" "$LINKED_EMAILS"; then
+    printf 'linked\n'
+    return 0
+  fi
+
+  if [ "$EMAIL_LIST_AVAILABLE" -eq 1 ]; then
+    printf 'unlinked\n'
+    return 0
+  fi
+
+  sample_sha=$(sample_sha_for_email "$email" "$ELIGIBLE_LOG")
+  if [ -z "$sample_sha" ]; then
+    sample_sha=$(sample_sha_for_email "$email" "$ALL_LOG")
+  fi
+
+  if [ -z "$sample_sha" ]; then
+    printf 'unknown\n'
+    return 0
+  fi
+
+  mapped_login=$(gh api "repos/$REPO_NAME/commits/$sample_sha" --jq '.author.login // ""' 2>/dev/null) || {
+    printf 'unknown\n'
+    return 0
+  }
+
+  if [ "$mapped_login" = "$LOGIN" ]; then
+    printf 'linked\n'
+  else
+    printf 'unlinked\n'
+  fi
+}
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --since)
+      [ "$#" -ge 2 ] || die "--since requires a value"
+      SINCE="$2"
+      ALL_TIME=0
+      shift 2
+      ;;
+    --all-time)
+      ALL_TIME=1
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    --version)
+      printf 'gh-contrib-doctor %s\n' "$VERSION"
+      exit 0
+      ;;
+    *)
+      die "unknown option: $1"
+      ;;
+  esac
+done
+
+command -v git >/dev/null 2>&1 || die "git is required"
+command -v gh >/dev/null 2>&1 || die "GitHub CLI (gh) is required"
+git rev-parse --is-inside-work-tree >/dev/null 2>&1 || die "run this command inside a Git repository"
+
+TMP_DIR=$(mktemp -d 2>/dev/null || mktemp -d -t gh-contrib-doctor) || die "could not create temporary directory"
+LINKED_EMAILS_RAW="$TMP_DIR/linked-emails-raw"
+LINKED_EMAILS="$TMP_DIR/linked-emails"
+EMAIL_INFO="$TMP_DIR/email-info"
+CANDIDATE_EMAILS_RAW="$TMP_DIR/candidate-emails-raw"
+CANDIDATE_EMAILS="$TMP_DIR/candidate-emails"
+ALL_LOG="$TMP_DIR/all-log.tsv"
+ELIGIBLE_LOG="$TMP_DIR/eligible-log.tsv"
+ALL_HASHES="$TMP_DIR/all-hashes"
+ELIGIBLE_HASHES="$TMP_DIR/eligible-hashes"
+BRANCH_ONLY_HASHES="$TMP_DIR/branch-only-hashes"
+
+user_info=$(gh api user --jq '[.login, (.id|tostring)] | @tsv' 2>/dev/null) || die "GitHub CLI is not authenticated; run 'gh auth login'"
+IFS=$'\t' read -r LOGIN USER_ID <<< "$user_info"
+[ -n "$LOGIN" ] || die "could not determine the authenticated GitHub user"
+
+repo_info=$(gh repo view --json nameWithOwner,defaultBranchRef,isFork,visibility,viewerPermission --jq '[.nameWithOwner, (.defaultBranchRef.name // ""), (.isFork|tostring), .visibility, (.viewerPermission // "")] | @tsv' 2>/dev/null) || die "could not resolve this repository on GitHub; check the remote and your access"
+IFS=$'\t' read -r REPO_NAME DEFAULT_BRANCH IS_FORK VISIBILITY VIEWER_PERMISSION <<< "$repo_info"
+[ -n "$REPO_NAME" ] || die "could not determine the GitHub repository"
+
+LOCAL_NAME=$(git config --get user.name 2>/dev/null || true)
+LOCAL_EMAIL=$(git config --get user.email 2>/dev/null || true)
+
+EMAIL_LIST_AVAILABLE=1
+GITHUB_DEFAULT_EMAIL=""
+if gh repo view --json viewerDefaultCommitEmail,viewerPossibleCommitEmails --jq '(.viewerDefaultCommitEmail // ""), (.viewerPossibleCommitEmails[]?)' > "$EMAIL_INFO" 2>/dev/null; then
+  GITHUB_DEFAULT_EMAIL=$(sed -n '1p' "$EMAIL_INFO")
+  sed '1d' "$EMAIL_INFO" > "$LINKED_EMAILS_RAW"
+  if [ -n "$GITHUB_DEFAULT_EMAIL" ]; then
+    printf '%s\n' "$GITHUB_DEFAULT_EMAIL" >> "$LINKED_EMAILS_RAW"
+  fi
+else
+  EMAIL_LIST_AVAILABLE=0
+  : > "$LINKED_EMAILS_RAW"
+fi
+
+printf '%s@users.noreply.github.com\n' "$LOGIN" >> "$LINKED_EMAILS_RAW"
+if [ -n "$USER_ID" ]; then
+  printf '%s+%s@users.noreply.github.com\n' "$USER_ID" "$LOGIN" >> "$LINKED_EMAILS_RAW"
+fi
+normalize_email_file "$LINKED_EMAILS_RAW" "$LINKED_EMAILS"
+
+HAS_COMMITS=1
+if ! git rev-parse --verify HEAD >/dev/null 2>&1; then
+  HAS_COMMITS=0
+fi
+
+: > "$ALL_LOG"
+: > "$ELIGIBLE_LOG"
+: > "$CANDIDATE_EMAILS_RAW"
+
+BRANCH_ANALYSIS_AVAILABLE=0
+DEFAULT_REF=""
+GH_PAGES_REF=""
+
+if [ "$HAS_COMMITS" -eq 1 ]; then
+  emit_log "__all__" > "$ALL_LOG" || die "could not read Git history; check the --since value"
+
+  awk -F '\t' -v local_name="$LOCAL_NAME" -v local_email="$LOCAL_EMAIL" '
+    BEGIN {
+      wanted_name = tolower(local_name)
+      wanted_email = tolower(local_email)
+    }
+    {
+      name_matches = (wanted_name != "" && tolower($2) == wanted_name)
+      email_matches = (wanted_email != "" && tolower($3) == wanted_email)
+      if (name_matches || email_matches) print $3
+    }
+  ' "$ALL_LOG" >> "$CANDIDATE_EMAILS_RAW"
+fi
+
+if [ -n "$LOCAL_EMAIL" ]; then
+  printf '%s\n' "$LOCAL_EMAIL" >> "$CANDIDATE_EMAILS_RAW"
+fi
+normalize_email_file "$CANDIDATE_EMAILS_RAW" "$CANDIDATE_EMAILS"
+
+if [ -n "$DEFAULT_BRANCH" ] && DEFAULT_REF=$(resolve_branch_ref "$DEFAULT_BRANCH"); then
+  BRANCH_ANALYSIS_AVAILABLE=1
+  if [ "$HAS_COMMITS" -eq 1 ]; then
+    emit_log "$DEFAULT_REF" >> "$ELIGIBLE_LOG" || true
+  fi
+fi
+
+if GH_PAGES_REF=$(resolve_branch_ref "gh-pages"); then
+  if [ "$GH_PAGES_REF" != "$DEFAULT_REF" ] && [ "$HAS_COMMITS" -eq 1 ]; then
+    emit_log "$GH_PAGES_REF" >> "$ELIGIBLE_LOG" || true
+  fi
+fi
+
+filter_candidate_hashes "$CANDIDATE_EMAILS" "$ALL_LOG" | sort -u > "$ALL_HASHES"
+filter_candidate_hashes "$CANDIDATE_EMAILS" "$ELIGIBLE_LOG" | sort -u > "$ELIGIBLE_HASHES"
+comm -23 "$ALL_HASHES" "$ELIGIBLE_HASHES" > "$BRANCH_ONLY_HASHES"
+
+ALL_COUNT=$(line_count "$ALL_HASHES")
+ELIGIBLE_COUNT=$(line_count "$ELIGIBLE_HASHES")
+BRANCH_ONLY_COUNT=$(line_count "$BRANCH_ONLY_HASHES")
+
+printf '%bgh-contrib-doctor v%s%b\n' "$BOLD" "$VERSION" "$RESET"
+
+section "Repository"
+ok "GitHub CLI authenticated as @$LOGIN"
+
+if [ "$IS_FORK" = "true" ]; then
+  blocker "$REPO_NAME is a fork. GitHub does not count commit contributions made in forks."
+else
+  ok "$REPO_NAME is a standalone repository"
+fi
+
+if [ -n "$DEFAULT_BRANCH" ]; then
+  ok "Default branch: $DEFAULT_BRANCH"
+else
+  warning "GitHub reports no default branch"
+fi
+
+case "$VIEWER_PERMISSION" in
+  ADMIN|MAINTAIN|WRITE|TRIAGE)
+    ok "Repository relationship: $VIEWER_PERMISSION permission"
+    ;;
+  READ)
+    warning "Your permission is READ. GitHub also requires a qualifying repository relationship for commit credit."
+    ;;
+  *)
+    warning "Could not determine your repository relationship"
+    ;;
+esac
+
+if [ "$VISIBILITY" = "PRIVATE" ]; then
+  warning "Repository is private. Public profile visibility depends on your private-contribution setting."
+fi
+
+section "Git identity"
+if [ -n "$LOCAL_NAME" ]; then
+  info "user.name: $LOCAL_NAME"
+else
+  warning "Git user.name is not configured"
+fi
+
+if [ -z "$LOCAL_EMAIL" ]; then
+  blocker "Git user.email is not configured; commits may use an unintended identity"
+else
+  config_status=$(classify_email "$LOCAL_EMAIL")
+  case "$config_status" in
+    linked)
+      if [ "$EMAIL_LIST_AVAILABLE" -eq 1 ]; then
+        ok "$LOCAL_EMAIL is a GitHub-allowed commit email for @$LOGIN"
+      else
+        ok "GitHub attributes commits using $LOCAL_EMAIL to @$LOGIN"
+      fi
+      ;;
+    unlinked)
+      blocker "$LOCAL_EMAIL is not a GitHub-allowed commit email for @$LOGIN"
+      if [ -n "$GITHUB_DEFAULT_EMAIL" ]; then
+        info "GitHub's default commit email here is $GITHUB_DEFAULT_EMAIL"
+      fi
+      ;;
+    unknown)
+      warning "Could not verify whether $LOCAL_EMAIL is attributed to @$LOGIN"
+      ;;
+  esac
+fi
+
+if [ "$EMAIL_LIST_AVAILABLE" -eq 0 ]; then
+  info "GitHub CLI did not expose viewerPossibleCommitEmails; commit metadata is used as a fallback where possible"
+fi
+
+if [ "$HAS_COMMITS" -eq 1 ]; then
+  while IFS= read -r email; do
+    [ -n "$email" ] || continue
+    if [ -n "$LOCAL_EMAIL" ] && [ "$(printf '%s' "$email" | tr '[:upper:]' '[:lower:]')" = "$(printf '%s' "$LOCAL_EMAIL" | tr '[:upper:]' '[:lower:]')" ]; then
+      continue
+    fi
+
+    count=$(commit_count_for_email "$email" "$ALL_LOG")
+    [ "$count" -gt 0 ] || continue
+    status=$(classify_email "$email")
+
+    case "$status" in
+      linked)
+        ok "$count likely commit(s) use historical email $email, attributed to @$LOGIN"
+        ;;
+      unlinked)
+        blocker "$count likely commit(s) use historical email $email, not attributed to @$LOGIN"
+        ;;
+      unknown)
+        warning "Could not verify historical email $email used by $count likely commit(s)"
+        ;;
+    esac
+  done < "$CANDIDATE_EMAILS"
+fi
+
+if [ "$ALL_TIME" -eq 1 ]; then
+  WINDOW_LABEL="all time"
+else
+  WINDOW_LABEL="since $SINCE"
+fi
+
+section "Commits ($WINDOW_LABEL)"
+if [ "$HAS_COMMITS" -eq 0 ]; then
+  info "No local commits to analyze"
+elif [ "$ALL_COUNT" -eq 0 ]; then
+  info "No commits matching your current Git identity were found"
+else
+  info "$ALL_COUNT likely commit(s) match your current Git identity"
+
+  if [ "$BRANCH_ANALYSIS_AVAILABLE" -eq 0 ]; then
+    warning "The default branch is not available in this local clone, so branch eligibility could not be checked"
+  else
+    if [ "$ELIGIBLE_COUNT" -gt 0 ]; then
+      ok "$ELIGIBLE_COUNT likely commit(s) are reachable from the default branch or local gh-pages branch"
+    fi
+
+    if [ "$BRANCH_ONLY_COUNT" -gt 0 ]; then
+      blocker "$BRANCH_ONLY_COUNT likely commit(s) exist only outside the default/gh-pages branches"
+      info "Merge the relevant branch into $DEFAULT_BRANCH (or gh-pages when it is a GitHub Pages branch) for those commits to qualify."
+    fi
+  fi
+fi
+
+section "Diagnosis"
+if [ "$BLOCKERS" -eq 0 ]; then
+  ok "No definite contribution blockers found"
+  if [ "$ELIGIBLE_COUNT" -gt 0 ]; then
+    info "GitHub notes that newly qualifying contributions can take up to 24 hours to appear."
+  fi
+else
+  printf '  %b✗%b %d definite blocker(s) found\n' "$RED" "$RESET" "$BLOCKERS"
+fi
+
+if [ "$WARNINGS" -gt 0 ]; then
+  info "$WARNINGS warning(s) could not be treated as definite blockers"
+fi
+
+if [ "$BLOCKERS" -gt 0 ]; then
+  exit 1
+fi
+exit 0
