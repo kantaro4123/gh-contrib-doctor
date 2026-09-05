@@ -5,6 +5,9 @@ set -o pipefail
 VERSION="0.1.0"
 SINCE="1 year ago"
 ALL_TIME=0
+JSON_OUTPUT=0
+STRICT=0
+FORCE_NO_COLOR=0
 BLOCKERS=0
 WARNINGS=0
 TMP_DIR=""
@@ -20,12 +23,15 @@ Options:
   --since <date>  Analyze commits since a date accepted by `git log`
                   (default: "1 year ago")
   --all-time      Analyze the complete local Git history
+  --json          Emit machine-readable JSON
+  --strict        Exit 1 when warnings are present, even without blockers
+  --no-color      Disable ANSI colors
   -h, --help      Show this help
   --version       Show the version
 
 Exit codes:
-  0  No definite blocker found
-  1  One or more definite blockers found
+  0  No definite blocker found (and no warning when --strict is used)
+  1  One or more definite blockers found, or a warning under --strict
   2  The doctor could not run
 EOF
 }
@@ -43,7 +49,46 @@ cleanup() {
 
 trap cleanup EXIT INT TERM
 
-if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --since)
+      [ "$#" -ge 2 ] || die "--since requires a value"
+      SINCE="$2"
+      ALL_TIME=0
+      shift 2
+      ;;
+    --all-time)
+      ALL_TIME=1
+      shift
+      ;;
+    --json)
+      JSON_OUTPUT=1
+      FORCE_NO_COLOR=1
+      shift
+      ;;
+    --strict)
+      STRICT=1
+      shift
+      ;;
+    --no-color)
+      FORCE_NO_COLOR=1
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    --version)
+      printf 'gh-contrib-doctor %s\n' "$VERSION"
+      exit 0
+      ;;
+    *)
+      die "unknown option: $1"
+      ;;
+  esac
+done
+
+if [ "$FORCE_NO_COLOR" -eq 0 ] && [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
   GREEN='\033[32m'
   YELLOW='\033[33m'
   RED='\033[31m'
@@ -60,24 +105,29 @@ else
 fi
 
 section() {
+  [ "$JSON_OUTPUT" -eq 1 ] && return 0
   printf '\n%b%s%b\n' "$BOLD" "$1" "$RESET"
 }
 
 ok() {
+  [ "$JSON_OUTPUT" -eq 1 ] && return 0
   printf '  %b✓%b %s\n' "$GREEN" "$RESET" "$*"
 }
 
 info() {
+  [ "$JSON_OUTPUT" -eq 1 ] && return 0
   printf '  %b·%b %s\n' "$BLUE" "$RESET" "$*"
 }
 
 warning() {
   WARNINGS=$((WARNINGS + 1))
+  [ "$JSON_OUTPUT" -eq 1 ] && return 0
   printf '  %b!%b %s\n' "$YELLOW" "$RESET" "$*"
 }
 
 blocker() {
   BLOCKERS=$((BLOCKERS + 1))
+  [ "$JSON_OUTPUT" -eq 1 ] && return 0
   printf '  %b✗%b %s\n' "$RED" "$RESET" "$*"
 }
 
@@ -115,20 +165,9 @@ emit_log() {
   fi
 }
 
-resolve_branch_ref() {
+github_branch_sha() {
   branch="$1"
-
-  if git rev-parse --verify --quiet "origin/$branch^{commit}" >/dev/null 2>&1; then
-    printf 'origin/%s\n' "$branch"
-    return 0
-  fi
-
-  if git rev-parse --verify --quiet "$branch^{commit}" >/dev/null 2>&1; then
-    printf '%s\n' "$branch"
-    return 0
-  fi
-
-  return 1
+  gh api "repos/$REPO_NAME/branches/$branch" --jq '.commit.sha' 2>/dev/null
 }
 
 filter_candidate_hashes() {
@@ -194,31 +233,55 @@ classify_email() {
   fi
 }
 
-while [ "$#" -gt 0 ]; do
-  case "$1" in
-    --since)
-      [ "$#" -ge 2 ] || die "--since requires a value"
-      SINCE="$2"
-      ALL_TIME=0
-      shift 2
-      ;;
-    --all-time)
-      ALL_TIME=1
-      shift
-      ;;
-    -h|--help)
-      usage
-      exit 0
-      ;;
-    --version)
-      printf 'gh-contrib-doctor %s\n' "$VERSION"
-      exit 0
-      ;;
-    *)
-      die "unknown option: $1"
-      ;;
-  esac
-done
+json_escape() {
+  value=$1
+  value=${value//\\/\\\\}
+  value=${value//\"/\\\"}
+  value=${value//$'\n'/\\n}
+  value=${value//$'\r'/\\r}
+  value=${value//$'\t'/\\t}
+  printf '%s' "$value"
+}
+
+json_bool() {
+  if [ "$1" = "1" ] || [ "$1" = "true" ]; then
+    printf 'true'
+  else
+    printf 'false'
+  fi
+}
+
+print_json() {
+  ready=1
+  [ "$BLOCKERS" -gt 0 ] && ready=0
+  printf '{\n'
+  printf '  "version": "%s",\n' "$(json_escape "$VERSION")"
+  printf '  "repository": "%s",\n' "$(json_escape "$REPO_NAME")"
+  printf '  "user": "%s",\n' "$(json_escape "$LOGIN")"
+  printf '  "default_branch": "%s",\n' "$(json_escape "$DEFAULT_BRANCH")"
+  printf '  "visibility": "%s",\n' "$(json_escape "$VISIBILITY")"
+  printf '  "fork": %s,\n' "$(json_bool "$IS_FORK")"
+  printf '  "shallow": %s,\n' "$(json_bool "$IS_SHALLOW")"
+  printf '  "strict": %s,\n' "$(json_bool "$STRICT")"
+  printf '  "git_identity": {\n'
+  printf '    "name": "%s",\n' "$(json_escape "$LOCAL_NAME")"
+  printf '    "email": "%s",\n' "$(json_escape "$LOCAL_EMAIL")"
+  printf '    "email_status": "%s"\n' "$(json_escape "$LOCAL_EMAIL_STATUS")"
+  printf '  },\n'
+  printf '  "commits": {\n'
+  printf '    "window": "%s",\n' "$(json_escape "$WINDOW_LABEL")"
+  printf '    "matched": %d,\n' "$ALL_COUNT"
+  printf '    "eligible": %d,\n' "$ELIGIBLE_COUNT"
+  printf '    "not_on_github_eligible_branches": %d,\n' "$BRANCH_ONLY_COUNT"
+  printf '    "branch_analysis_available": %s\n' "$(json_bool "$BRANCH_ANALYSIS_AVAILABLE")"
+  printf '  },\n'
+  printf '  "summary": {\n'
+  printf '    "blockers": %d,\n' "$BLOCKERS"
+  printf '    "warnings": %d,\n' "$WARNINGS"
+  printf '    "ready": %s\n' "$(json_bool "$ready")"
+  printf '  }\n'
+  printf '}\n'
+}
 
 command -v git >/dev/null 2>&1 || die "git is required"
 command -v gh >/dev/null 2>&1 || die "GitHub CLI (gh) is required"
@@ -246,6 +309,7 @@ IFS=$'\t' read -r REPO_NAME DEFAULT_BRANCH IS_FORK VISIBILITY VIEWER_PERMISSION 
 
 LOCAL_NAME=$(git config --get user.name 2>/dev/null || true)
 LOCAL_EMAIL=$(git config --get user.email 2>/dev/null || true)
+IS_SHALLOW=$(git rev-parse --is-shallow-repository 2>/dev/null || printf 'false')
 
 EMAIL_LIST_AVAILABLE=1
 GITHUB_DEFAULT_EMAIL=""
@@ -278,6 +342,8 @@ fi
 BRANCH_ANALYSIS_AVAILABLE=0
 DEFAULT_REF=""
 GH_PAGES_REF=""
+DEFAULT_HEAD_MISSING_LOCALLY=0
+GH_PAGES_HEAD_MISSING_LOCALLY=0
 
 if [ "$HAS_COMMITS" -eq 1 ]; then
   emit_log "__all__" > "$ALL_LOG" || die "could not read Git history; check the --since value"
@@ -300,16 +366,28 @@ if [ -n "$LOCAL_EMAIL" ]; then
 fi
 normalize_email_file "$CANDIDATE_EMAILS_RAW" "$CANDIDATE_EMAILS"
 
-if [ -n "$DEFAULT_BRANCH" ] && DEFAULT_REF=$(resolve_branch_ref "$DEFAULT_BRANCH"); then
-  BRANCH_ANALYSIS_AVAILABLE=1
-  if [ "$HAS_COMMITS" -eq 1 ]; then
-    emit_log "$DEFAULT_REF" >> "$ELIGIBLE_LOG" || true
+if [ -n "$DEFAULT_BRANCH" ]; then
+  DEFAULT_REF=$(github_branch_sha "$DEFAULT_BRANCH" 2>/dev/null || true)
+  if [ -n "$DEFAULT_REF" ]; then
+    if git cat-file -e "$DEFAULT_REF^{commit}" >/dev/null 2>&1; then
+      BRANCH_ANALYSIS_AVAILABLE=1
+      if [ "$HAS_COMMITS" -eq 1 ]; then
+        emit_log "$DEFAULT_REF" >> "$ELIGIBLE_LOG" || true
+      fi
+    else
+      DEFAULT_HEAD_MISSING_LOCALLY=1
+    fi
   fi
 fi
 
-if GH_PAGES_REF=$(resolve_branch_ref "gh-pages"); then
-  if [ "$GH_PAGES_REF" != "$DEFAULT_REF" ] && [ "$HAS_COMMITS" -eq 1 ]; then
-    emit_log "$GH_PAGES_REF" >> "$ELIGIBLE_LOG" || true
+GH_PAGES_REF=$(github_branch_sha "gh-pages" 2>/dev/null || true)
+if [ -n "$GH_PAGES_REF" ]; then
+  if git cat-file -e "$GH_PAGES_REF^{commit}" >/dev/null 2>&1; then
+    if [ "$GH_PAGES_REF" != "$DEFAULT_REF" ] && [ "$HAS_COMMITS" -eq 1 ]; then
+      emit_log "$GH_PAGES_REF" >> "$ELIGIBLE_LOG" || true
+    fi
+  else
+    GH_PAGES_HEAD_MISSING_LOCALLY=1
   fi
 fi
 
@@ -321,7 +399,15 @@ ALL_COUNT=$(line_count "$ALL_HASHES")
 ELIGIBLE_COUNT=$(line_count "$ELIGIBLE_HASHES")
 BRANCH_ONLY_COUNT=$(line_count "$BRANCH_ONLY_HASHES")
 
-printf '%bgh-contrib-doctor v%s%b\n' "$BOLD" "$VERSION" "$RESET"
+if [ "$ALL_TIME" -eq 1 ]; then
+  WINDOW_LABEL="all time"
+else
+  WINDOW_LABEL="since $SINCE"
+fi
+
+if [ "$JSON_OUTPUT" -eq 0 ]; then
+  printf '%bgh-contrib-doctor v%s%b\n' "$BOLD" "$VERSION" "$RESET"
+fi
 
 section "Repository"
 ok "GitHub CLI authenticated as @$LOGIN"
@@ -354,6 +440,20 @@ if [ "$VISIBILITY" = "PRIVATE" ]; then
   warning "Repository is private. Public profile visibility depends on your private-contribution setting."
 fi
 
+if [ "$IS_SHALLOW" = "true" ]; then
+  warning "This is a shallow clone; historical commit and email analysis may be incomplete."
+fi
+
+if [ "$DEFAULT_HEAD_MISSING_LOCALLY" -eq 1 ]; then
+  warning "GitHub's $DEFAULT_BRANCH head is not present in this clone; run 'git fetch --all' for complete branch analysis."
+elif [ -n "$DEFAULT_BRANCH" ] && [ -z "$DEFAULT_REF" ]; then
+  warning "Could not resolve GitHub's $DEFAULT_BRANCH branch head through the API."
+fi
+
+if [ "$GH_PAGES_HEAD_MISSING_LOCALLY" -eq 1 ]; then
+  warning "GitHub's gh-pages head is not present in this clone; fetch it for complete branch analysis."
+fi
+
 section "Git identity"
 if [ -n "$LOCAL_NAME" ]; then
   info "user.name: $LOCAL_NAME"
@@ -361,11 +461,12 @@ else
   warning "Git user.name is not configured"
 fi
 
+LOCAL_EMAIL_STATUS="missing"
 if [ -z "$LOCAL_EMAIL" ]; then
   blocker "Git user.email is not configured; commits may use an unintended identity"
 else
-  config_status=$(classify_email "$LOCAL_EMAIL")
-  case "$config_status" in
+  LOCAL_EMAIL_STATUS=$(classify_email "$LOCAL_EMAIL")
+  case "$LOCAL_EMAIL_STATUS" in
     linked)
       if [ "$EMAIL_LIST_AVAILABLE" -eq 1 ]; then
         ok "$LOCAL_EMAIL is a GitHub-allowed commit email for @$LOGIN"
@@ -414,12 +515,6 @@ if [ "$HAS_COMMITS" -eq 1 ]; then
   done < "$CANDIDATE_EMAILS"
 fi
 
-if [ "$ALL_TIME" -eq 1 ]; then
-  WINDOW_LABEL="all time"
-else
-  WINDOW_LABEL="since $SINCE"
-fi
-
 section "Commits ($WINDOW_LABEL)"
 if [ "$HAS_COMMITS" -eq 0 ]; then
   info "No local commits to analyze"
@@ -429,15 +524,16 @@ else
   info "$ALL_COUNT likely commit(s) match your current Git identity"
 
   if [ "$BRANCH_ANALYSIS_AVAILABLE" -eq 0 ]; then
-    warning "The default branch is not available in this local clone, so branch eligibility could not be checked"
+    warning "GitHub branch heads are not fully available in this clone, so branch eligibility could not be checked"
   else
     if [ "$ELIGIBLE_COUNT" -gt 0 ]; then
-      ok "$ELIGIBLE_COUNT likely commit(s) are reachable from the default branch or local gh-pages branch"
+      ok "$ELIGIBLE_COUNT likely commit(s) are reachable from GitHub's default branch or gh-pages head"
     fi
 
     if [ "$BRANCH_ONLY_COUNT" -gt 0 ]; then
-      blocker "$BRANCH_ONLY_COUNT likely commit(s) exist only outside the default/gh-pages branches"
-      info "Merge the relevant branch into $DEFAULT_BRANCH (or gh-pages when it is a GitHub Pages branch) for those commits to qualify."
+      blocker "$BRANCH_ONLY_COUNT likely commit(s) are not reachable from GitHub's default/gh-pages branch heads"
+      info "$BRANCH_ONLY_COUNT likely commit(s) exist only outside the default/gh-pages branches or have not been pushed yet."
+      info "Push or merge the relevant commit into $DEFAULT_BRANCH (or gh-pages when it is a GitHub Pages branch) for it to qualify."
     fi
   fi
 fi
@@ -449,14 +545,23 @@ if [ "$BLOCKERS" -eq 0 ]; then
     info "GitHub notes that newly qualifying contributions can take up to 24 hours to appear."
   fi
 else
-  printf '  %b✗%b %d definite blocker(s) found\n' "$RED" "$RESET" "$BLOCKERS"
+  if [ "$JSON_OUTPUT" -eq 0 ]; then
+    printf '  %b✗%b %d definite blocker(s) found\n' "$RED" "$RESET" "$BLOCKERS"
+  fi
 fi
 
 if [ "$WARNINGS" -gt 0 ]; then
   info "$WARNINGS warning(s) could not be treated as definite blockers"
 fi
 
+if [ "$JSON_OUTPUT" -eq 1 ]; then
+  print_json
+fi
+
 if [ "$BLOCKERS" -gt 0 ]; then
+  exit 1
+fi
+if [ "$STRICT" -eq 1 ] && [ "$WARNINGS" -gt 0 ]; then
   exit 1
 fi
 exit 0

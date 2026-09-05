@@ -46,6 +46,21 @@ fi
 
 if [ "${1:-}" = "api" ]; then
   case "${2:-}" in
+    repos/test/repo/branches/main)
+      if [ -n "${MOCK_MAIN_SHA:-}" ]; then
+        printf '%s\n' "$MOCK_MAIN_SHA"
+      else
+        git rev-parse main
+      fi
+      exit 0
+      ;;
+    repos/test/repo/branches/gh-pages)
+      if [ -n "${MOCK_GH_PAGES_SHA:-}" ]; then
+        printf '%s\n' "$MOCK_GH_PAGES_SHA"
+        exit 0
+      fi
+      exit 1
+      ;;
     repos/test/repo/commits/*)
       printf '%s\n' "${MOCK_COMMIT_LOGIN:-testuser}"
       exit 0
@@ -133,6 +148,20 @@ assert_contains "clean repository reports no blockers" "$output" "No definite co
 assert_contains "clean repository recognizes default branch" "$output" "Default branch: main"
 assert_contains "clean repository recognizes allowed email" "$output" "GitHub-allowed commit email"
 
+# JSON output is valid and escapes Git config values
+repo="$TMP_ROOT/json"
+new_repo "$repo"
+git -C "$repo" config user.name 'Test "Quoted" User'
+output=$(MOCK_LINKED_EMAILS="test@example.com" run_doctor "$repo" --json)
+status=$?
+assert_status "json mode exits 0" 0 "$status"
+assert_contains "json mode includes repository" "$output" '"repository": "test/repo"'
+assert_contains "json mode includes readiness" "$output" '"ready": true'
+if command -v python3 >/dev/null 2>&1; then
+  printf '%s\n' "$output" | python3 -c 'import json,sys; data=json.load(sys.stdin); assert data["git_identity"]["name"] == "Test \"Quoted\" User"; assert data["commits"]["matched"] >= data["commits"]["eligible"]; assert data["summary"]["blockers"] == 0' >/dev/null 2>&1
+  assert_status "json mode emits parseable escaped JSON" 0 "$?"
+fi
+
 # Commit only on a feature branch
 repo="$TMP_ROOT/branch-only"
 new_repo "$repo"
@@ -147,6 +176,39 @@ output=$(MOCK_LINKED_EMAILS="test@example.com" run_doctor "$repo")
 status=$?
 assert_status "branch-only commit exits 1" 1 "$status"
 assert_contains "branch-only commit is diagnosed" "$output" "likely commit(s) exist only outside the default/gh-pages branches"
+
+# Commit on local main but not on GitHub's main
+repo="$TMP_ROOT/unpushed-main"
+new_repo "$repo"
+remote_main_sha=$(git -C "$repo" rev-parse HEAD)
+(
+  cd "$repo" || exit 1
+  printf 'local-only\n' >> file.txt
+  git add file.txt
+  git commit -qm "local only"
+)
+output=$(MOCK_MAIN_SHA="$remote_main_sha" MOCK_LINKED_EMAILS="test@example.com" run_doctor "$repo")
+status=$?
+assert_status "unpushed default-branch commit exits 1" 1 "$status"
+assert_contains "unpushed default-branch commit is diagnosed" "$output" "likely commit(s) are not reachable from GitHub's default/gh-pages branch heads"
+
+# Shallow clones warn that history analysis is incomplete
+repo="$TMP_ROOT/shallow"
+new_repo "$repo"
+head_sha=$(git -C "$repo" rev-parse HEAD)
+printf '%s\n' "$head_sha" > "$repo/.git/shallow"
+output=$(MOCK_LINKED_EMAILS="test@example.com" run_doctor "$repo")
+status=$?
+assert_status "shallow clone still exits 0 without blockers" 0 "$status"
+assert_contains "shallow clone warning is shown" "$output" "shallow clone"
+
+# Strict mode turns warnings into failures
+repo="$TMP_ROOT/strict"
+new_repo "$repo"
+output=$(MOCK_VISIBILITY=PRIVATE MOCK_LINKED_EMAILS="test@example.com" run_doctor "$repo" --strict)
+status=$?
+assert_status "strict mode exits 1 on warnings" 1 "$status"
+assert_contains "strict mode still reports warning context" "$output" "Repository is private"
 
 # Forks are definite blockers
 repo="$TMP_ROOT/fork"

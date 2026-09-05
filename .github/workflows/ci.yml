@@ -21,7 +21,7 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Check Bash syntax
         run: |
@@ -37,3 +37,4 @@ jobs:
         run: |
           gh extension install .
           gh contrib-doctor --version
+          gh contrib-doctor --help >/dev/null
