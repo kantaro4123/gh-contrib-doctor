@@ -158,7 +158,7 @@ assert_status "json mode exits 0" 0 "$status"
 assert_contains "json mode includes repository" "$output" '"repository": "test/repo"'
 assert_contains "json mode includes readiness" "$output" '"ready": true'
 if command -v python3 >/dev/null 2>&1; then
-  printf '%s\n' "$output" | python3 -c 'import json,sys; data=json.load(sys.stdin); assert data["git_identity"]["name"] == "Test \\"Quoted\\" User"' >/dev/null 2>&1
+  printf '%s\n' "$output" | python3 -c 'import json,sys; data=json.load(sys.stdin); assert data["git_identity"]["name"] == "Test \"Quoted\" User"; assert data["commits"]["matched"] >= data["commits"]["eligible"]; assert data["summary"]["blockers"] == 0' >/dev/null 2>&1
   assert_status "json mode emits parseable escaped JSON" 0 "$?"
 fi
 
