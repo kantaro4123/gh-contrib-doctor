@@ -115,20 +115,9 @@ emit_log() {
   fi
 }
 
-resolve_branch_ref() {
+github_branch_sha() {
   branch="$1"
-
-  if git rev-parse --verify --quiet "origin/$branch^{commit}" >/dev/null 2>&1; then
-    printf 'origin/%s\n' "$branch"
-    return 0
-  fi
-
-  if git rev-parse --verify --quiet "$branch^{commit}" >/dev/null 2>&1; then
-    printf '%s\n' "$branch"
-    return 0
-  fi
-
-  return 1
+  gh api "repos/$REPO_NAME/branches/$branch" --jq '.commit.sha' 2>/dev/null
 }
 
 filter_candidate_hashes() {
@@ -278,6 +267,8 @@ fi
 BRANCH_ANALYSIS_AVAILABLE=0
 DEFAULT_REF=""
 GH_PAGES_REF=""
+DEFAULT_HEAD_MISSING_LOCALLY=0
+GH_PAGES_HEAD_MISSING_LOCALLY=0
 
 if [ "$HAS_COMMITS" -eq 1 ]; then
   emit_log "__all__" > "$ALL_LOG" || die "could not read Git history; check the --since value"
@@ -300,16 +291,28 @@ if [ -n "$LOCAL_EMAIL" ]; then
 fi
 normalize_email_file "$CANDIDATE_EMAILS_RAW" "$CANDIDATE_EMAILS"
 
-if [ -n "$DEFAULT_BRANCH" ] && DEFAULT_REF=$(resolve_branch_ref "$DEFAULT_BRANCH"); then
-  BRANCH_ANALYSIS_AVAILABLE=1
-  if [ "$HAS_COMMITS" -eq 1 ]; then
-    emit_log "$DEFAULT_REF" >> "$ELIGIBLE_LOG" || true
+if [ -n "$DEFAULT_BRANCH" ]; then
+  DEFAULT_REF=$(github_branch_sha "$DEFAULT_BRANCH" 2>/dev/null || true)
+  if [ -n "$DEFAULT_REF" ]; then
+    if git cat-file -e "$DEFAULT_REF^{commit}" >/dev/null 2>&1; then
+      BRANCH_ANALYSIS_AVAILABLE=1
+      if [ "$HAS_COMMITS" -eq 1 ]; then
+        emit_log "$DEFAULT_REF" >> "$ELIGIBLE_LOG" || true
+      fi
+    else
+      DEFAULT_HEAD_MISSING_LOCALLY=1
+    fi
   fi
 fi
 
-if GH_PAGES_REF=$(resolve_branch_ref "gh-pages"); then
-  if [ "$GH_PAGES_REF" != "$DEFAULT_REF" ] && [ "$HAS_COMMITS" -eq 1 ]; then
-    emit_log "$GH_PAGES_REF" >> "$ELIGIBLE_LOG" || true
+GH_PAGES_REF=$(github_branch_sha "gh-pages" 2>/dev/null || true)
+if [ -n "$GH_PAGES_REF" ]; then
+  if git cat-file -e "$GH_PAGES_REF^{commit}" >/dev/null 2>&1; then
+    if [ "$GH_PAGES_REF" != "$DEFAULT_REF" ] && [ "$HAS_COMMITS" -eq 1 ]; then
+      emit_log "$GH_PAGES_REF" >> "$ELIGIBLE_LOG" || true
+    fi
+  else
+    GH_PAGES_HEAD_MISSING_LOCALLY=1
   fi
 fi
 
@@ -352,6 +355,16 @@ esac
 
 if [ "$VISIBILITY" = "PRIVATE" ]; then
   warning "Repository is private. Public profile visibility depends on your private-contribution setting."
+fi
+
+if [ "$DEFAULT_HEAD_MISSING_LOCALLY" -eq 1 ]; then
+  warning "GitHub's $DEFAULT_BRANCH head is not present in this clone; run 'git fetch --all' for complete branch analysis."
+elif [ -n "$DEFAULT_BRANCH" ] && [ -z "$DEFAULT_REF" ]; then
+  warning "Could not resolve GitHub's $DEFAULT_BRANCH branch head through the API."
+fi
+
+if [ "$GH_PAGES_HEAD_MISSING_LOCALLY" -eq 1 ]; then
+  warning "GitHub's gh-pages head is not present in this clone; fetch it for complete branch analysis."
 fi
 
 section "Git identity"
@@ -429,15 +442,16 @@ else
   info "$ALL_COUNT likely commit(s) match your current Git identity"
 
   if [ "$BRANCH_ANALYSIS_AVAILABLE" -eq 0 ]; then
-    warning "The default branch is not available in this local clone, so branch eligibility could not be checked"
+    warning "GitHub branch heads are not fully available in this clone, so branch eligibility could not be checked"
   else
     if [ "$ELIGIBLE_COUNT" -gt 0 ]; then
-      ok "$ELIGIBLE_COUNT likely commit(s) are reachable from the default branch or local gh-pages branch"
+      ok "$ELIGIBLE_COUNT likely commit(s) are reachable from GitHub's default branch or gh-pages head"
     fi
 
     if [ "$BRANCH_ONLY_COUNT" -gt 0 ]; then
-      blocker "$BRANCH_ONLY_COUNT likely commit(s) exist only outside the default/gh-pages branches"
-      info "Merge the relevant branch into $DEFAULT_BRANCH (or gh-pages when it is a GitHub Pages branch) for those commits to qualify."
+      blocker "$BRANCH_ONLY_COUNT likely commit(s) are not reachable from GitHub's default/gh-pages branch heads"
+      info "$BRANCH_ONLY_COUNT likely commit(s) exist only outside the default/gh-pages branches or have not been pushed yet."
+      info "Push or merge the relevant commit into $DEFAULT_BRANCH (or gh-pages when it is a GitHub Pages branch) for it to qualify."
     fi
   fi
 fi
