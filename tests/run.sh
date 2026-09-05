@@ -46,6 +46,21 @@ fi
 
 if [ "${1:-}" = "api" ]; then
   case "${2:-}" in
+    repos/test/repo/branches/main)
+      if [ -n "${MOCK_MAIN_SHA:-}" ]; then
+        printf '%s\n' "$MOCK_MAIN_SHA"
+      else
+        git rev-parse main
+      fi
+      exit 0
+      ;;
+    repos/test/repo/branches/gh-pages)
+      if [ -n "${MOCK_GH_PAGES_SHA:-}" ]; then
+        printf '%s\n' "$MOCK_GH_PAGES_SHA"
+        exit 0
+      fi
+      exit 1
+      ;;
     repos/test/repo/commits/*)
       printf '%s\n' "${MOCK_COMMIT_LOGIN:-testuser}"
       exit 0
@@ -147,6 +162,21 @@ output=$(MOCK_LINKED_EMAILS="test@example.com" run_doctor "$repo")
 status=$?
 assert_status "branch-only commit exits 1" 1 "$status"
 assert_contains "branch-only commit is diagnosed" "$output" "likely commit(s) exist only outside the default/gh-pages branches"
+
+# Commit on local main but not on GitHub's main
+repo="$TMP_ROOT/unpushed-main"
+new_repo "$repo"
+remote_main_sha=$(git -C "$repo" rev-parse HEAD)
+(
+  cd "$repo" || exit 1
+  printf 'local-only\n' >> file.txt
+  git add file.txt
+  git commit -qm "local only"
+)
+output=$(MOCK_MAIN_SHA="$remote_main_sha" MOCK_LINKED_EMAILS="test@example.com" run_doctor "$repo")
+status=$?
+assert_status "unpushed default-branch commit exits 1" 1 "$status"
+assert_contains "unpushed default-branch commit is diagnosed" "$output" "likely commit(s) are not reachable from GitHub's default/gh-pages branch heads"
 
 # Forks are definite blockers
 repo="$TMP_ROOT/fork"
