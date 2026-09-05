@@ -178,6 +178,16 @@ status=$?
 assert_status "unpushed default-branch commit exits 1" 1 "$status"
 assert_contains "unpushed default-branch commit is diagnosed" "$output" "likely commit(s) are not reachable from GitHub's default/gh-pages branch heads"
 
+# Shallow clones warn that history analysis is incomplete
+repo="$TMP_ROOT/shallow"
+new_repo "$repo"
+head_sha=$(git -C "$repo" rev-parse HEAD)
+printf '%s\n' "$head_sha" > "$repo/.git/shallow"
+output=$(MOCK_LINKED_EMAILS="test@example.com" run_doctor "$repo")
+status=$?
+assert_status "shallow clone still exits 0 without blockers" 0 "$status"
+assert_contains "shallow clone warning is shown" "$output" "shallow clone"
+
 # Forks are definite blockers
 repo="$TMP_ROOT/fork"
 new_repo "$repo"
