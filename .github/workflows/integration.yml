@@ -20,7 +20,7 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
@@ -42,7 +42,9 @@ jobs:
 
           default_branch=$(gh repo view "$GITHUB_REPOSITORY" --json defaultBranchRef --jq '.defaultBranchRef.name')
           [ -n "$default_branch" ]
-          git rev-parse --verify "origin/$default_branch^{commit}" >/dev/null
+          default_sha=$(gh api "repos/$GITHUB_REPOSITORY/branches/$default_branch" --jq '.commit.sha')
+          [ -n "$default_sha" ]
+          git cat-file -e "$default_sha^{commit}"
 
       - name: Explain full diagnostic auth requirement
         run: |
